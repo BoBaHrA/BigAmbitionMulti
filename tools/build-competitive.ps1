@@ -127,7 +127,9 @@ if ($missing.Count -gt 0) {
 # The project has a double-install guard. A subscribed Workshop copy can win load
 # order and make the freshly built ModsLocal copy intentionally refuse to start.
 if (-not $SkipWorkshopCheck) {
-    $dupes = Find-WorkshopDuplicates -GamePath $resolvedGame
+    # PowerShell unwraps a function result with zero/one items into $null/a scalar.
+    # Force array semantics so StrictMode-safe .Count works for 0, 1 and N matches.
+    $dupes = @(Find-WorkshopDuplicates -GamePath $resolvedGame)
     if ($dupes.Count -gt 0) {
         Write-Host "`nWARNING: Workshop BigAmbitionsMP.dll copy/copies detected:" -ForegroundColor Yellow
         foreach ($d in $dupes) { Write-Host "  $d" -ForegroundColor Yellow }
