@@ -180,7 +180,11 @@ Write-Host "MSBuild ManagedDir: $managedProp"
 & dotnet build $project -c $Configuration "-p:GameDir=$gameProp" "-p:ManagedDir=$managedProp"
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE" }
 
-$deployDir = Join-Path $env:LOCALAPPDATA 'Low\Hovgaard Games\Big Ambitions\ModsLocal\BigAmbitionsMP'
+# Unity persistentDataPath on Windows lives under AppData\LocalLow, not
+# AppData\Local\Low. $env:LOCALAPPDATA points at ...\AppData\Local, so append
+# "Low" to that directory name before joining the game/mod path.
+$localLow = $env:LOCALAPPDATA.TrimEnd([char]92, [char]47) + 'Low'
+$deployDir = Join-Path $localLow 'Hovgaard Games\Big Ambitions\ModsLocal\BigAmbitionsMP'
 $dll = Join-Path $deployDir 'BigAmbitionsMP.dll'
 if (-not (Test-Path $dll)) {
     throw "Build succeeded but deployed DLL was not found at: $dll"
@@ -219,7 +223,7 @@ if ($Package) {
     $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
     Write-Host "Package:     $zip" -ForegroundColor Green
     Write-Host "ZIP SHA-256: $zipHash" -ForegroundColor Green
-    Write-Host "Player 2: extract BigAmbitionsMP into %LOCALAPPDATA%\Low\Hovgaard Games\Big Ambitions\ModsLocal\ and keep the Workshop copy disabled." -ForegroundColor Cyan
+    Write-Host "Player 2: extract BigAmbitionsMP into %USERPROFILE%\AppData\LocalLow\Hovgaard Games\Big Ambitions\ModsLocal\ and keep the Workshop copy disabled." -ForegroundColor Cyan
 }
 
 Write-Host "`nCompetitive build preflight finished successfully." -ForegroundColor Green
