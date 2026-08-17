@@ -16,7 +16,7 @@ function Write-Step([string]$Text) {
 function Add-Candidate([System.Collections.Generic.List[string]]$List, [string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
     try {
-        $p = [System.IO.Path]::GetFullPath($Path.Trim('"')).TrimEnd('\')
+        $p = [System.IO.Path]::GetFullPath($Path.Trim('"')).TrimEnd([char]92)
         if (-not $List.Contains($p)) { $List.Add($p) }
     } catch { }
 }
@@ -25,7 +25,7 @@ function Find-BigAmbitionsInstall {
     param([string]$Explicit)
 
     if (-not [string]::IsNullOrWhiteSpace($Explicit)) {
-        $p = [System.IO.Path]::GetFullPath($Explicit).TrimEnd('\')
+        $p = [System.IO.Path]::GetFullPath($Explicit).TrimEnd([char]92)
         $probe = Join-Path $p "Big Ambitions_Data\Managed\BigAmbitions.dll"
         if (-not (Test-Path $probe)) {
             throw "-GameDir does not look like a Big Ambitions install: $p (missing $probe)"
@@ -99,7 +99,7 @@ function Get-CsprojManagedReferences {
         foreach ($node in $xml.SelectNodes('//Reference/HintPath')) {
             $text = [string]$node.InnerText
             if ($text.StartsWith('$(ManagedDir)', [System.StringComparison]::OrdinalIgnoreCase)) {
-                $name = $text.Substring('$(ManagedDir)'.Length).TrimStart('\', '/')
+                $name = $text.Substring('$(ManagedDir)'.Length).TrimStart([char]92, [char]47)
                 if ($name -and -not $names.Contains($name)) { $names.Add($name) }
             }
         }
@@ -169,14 +169,11 @@ if ($running.Count -gt 0) {
 Write-Step "Build $Configuration"
 
 # Windows PowerShell 5 native-command quoting has a nasty edge case when an
-# argument containing spaces ends in a backslash. The old script passed
-#   -p:GameDir=E:\...\Big Ambitions\
-# and MSBuild could silently fall back to the csproj's default C: path, causing
-# every game/Unity reference to disappear and ~thousands of cascade errors.
-# Forward slashes avoid that quoting ambiguity. Pass ManagedDir explicitly too,
-# so the compiler does not depend on path concatenation inside the project file.
-$gameProp = (($resolvedGame -replace '\\', '/').TrimEnd('/')) + '/'
-$managedProp = (($managed -replace '\\', '/').TrimEnd('/')) + '/'
+# argument containing spaces ends in a backslash. The old script could silently
+# leave MSBuild on the csproj's default C: path even though preflight found E:.
+# Normalize to forward slashes and pass ManagedDir explicitly as a global property.
+$gameProp = $resolvedGame.TrimEnd([char]92, [char]47).Replace([char]92, [char]47) + '/'
+$managedProp = $managed.TrimEnd([char]92, [char]47).Replace([char]92, [char]47) + '/'
 Write-Host "MSBuild GameDir:    $gameProp"
 Write-Host "MSBuild ManagedDir: $managedProp"
 
