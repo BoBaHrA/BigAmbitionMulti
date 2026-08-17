@@ -35,7 +35,6 @@ function Find-BigAmbitionsInstall {
 
     $libraries = New-Object 'System.Collections.Generic.List[string]'
 
-    # Steam's primary path from registry.
     foreach ($reg in @(
         'HKCU:\Software\Valve\Steam',
         'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam',
@@ -48,11 +47,9 @@ function Find-BigAmbitionsInstall {
         } catch { }
     }
 
-    # Common fallback paths.
     if (${env:ProgramFiles(x86)}) { Add-Candidate $libraries (Join-Path ${env:ProgramFiles(x86)} 'Steam') }
     if ($env:ProgramFiles) { Add-Candidate $libraries (Join-Path $env:ProgramFiles 'Steam') }
 
-    # Read Steam libraryfolders.vdf from every primary candidate and add extra libraries.
     foreach ($steam in @($libraries)) {
         $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
         if (-not (Test-Path $vdf)) { continue }
@@ -79,7 +76,6 @@ function Find-WorkshopDuplicates {
 
     $hits = New-Object 'System.Collections.Generic.List[string]'
     try {
-        # game = <library>\steamapps\common\Big Ambitions
         $common = Split-Path $GamePath -Parent
         $steamapps = Split-Path $common -Parent
         $workshop = Join-Path $steamapps 'workshop\content\1331550'
@@ -92,6 +88,25 @@ function Find-WorkshopDuplicates {
         }
     } catch { }
     return $hits
+}
+
+function Get-CsprojManagedReferences {
+    param([string]$ProjectPath)
+
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        [xml]$xml = Get-Content $ProjectPath -Raw
+        foreach ($node in $xml.SelectNodes('//Reference/HintPath')) {
+            $text = [string]$node.InnerText
+            if ($text.StartsWith('$(ManagedDir)', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $name = $text.Substring('$(ManagedDir)'.Length).TrimStart('\', '/')
+                if ($name -and -not $names.Contains($name)) { $names.Add($name) }
+            }
+        }
+    } catch {
+        throw "Could not inspect ManagedDir references in BigAmbitionsMP.csproj: $($_.Exception.Message)"
+    }
+    return $names
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -112,23 +127,19 @@ $managed = Join-Path $resolvedGame 'Big Ambitions_Data\Managed'
 Write-Host "Game: $resolvedGame"
 Write-Host "Managed: $managed"
 
-$required = @(
-    'BigAmbitions.dll',
-    'BigAmbitions.ModAPI.dll',
-    'UnityEngine.dll',
-    'UnityEngine.CoreModule.dll',
-    'Unity.TextMeshPro.dll'
-)
-$missing = @($required | Where-Object { -not (Test-Path (Join-Path $managed $_)) })
+# Verify every game/Unity DLL the project actually references. This makes a wrong
+# Steam branch/game build fail here with a short useful list instead of producing
+# thousands of cascading CS0246/CS0103 errors.
+$managedRefs = @(Get-CsprojManagedReferences -ProjectPath $project)
+$missing = @($managedRefs | Where-Object { -not (Test-Path (Join-Path $managed $_)) })
 if ($missing.Count -gt 0) {
-    throw "Game Managed folder is incomplete. Missing: $($missing -join ', ')"
+    Write-Host "`nThe installed game does not contain all assemblies required by this source branch:" -ForegroundColor Red
+    foreach ($m in $missing) { Write-Host "  - $m" -ForegroundColor Red }
+    throw "Managed assembly preflight failed ($($missing.Count) missing). Confirm Big Ambitions EA 0.11 Mono/experimental branch and verify game files."
 }
+Write-Host "Managed assembly check: $($managedRefs.Count) referenced DLLs present" -ForegroundColor Green
 
-# The project has a double-install guard. A subscribed Workshop copy can win load
-# order and make the freshly built ModsLocal copy intentionally refuse to start.
 if (-not $SkipWorkshopCheck) {
-    # PowerShell unwraps a function result with zero/one items into $null/a scalar.
-    # Force array semantics so StrictMode-safe .Count works for 0, 1 and N matches.
     $dupes = @(Find-WorkshopDuplicates -GamePath $resolvedGame)
     if ($dupes.Count -gt 0) {
         Write-Host "`nWARNING: Workshop BigAmbitionsMP.dll copy/copies detected:" -ForegroundColor Yellow
@@ -139,7 +150,6 @@ if (-not $SkipWorkshopCheck) {
     }
 }
 
-# Nice-to-have provenance; does not fail builds outside a git checkout.
 try {
     $branch = (& git -C $repoRoot rev-parse --abbrev-ref HEAD 2>$null).Trim()
     $commit = (& git -C $repoRoot rev-parse --short=12 HEAD 2>$null).Trim()
@@ -149,7 +159,6 @@ try {
     }
 } catch { }
 
-# Avoid replacing the DLL while the game has it loaded.
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
     $_.ProcessName -like 'Big Ambitions*' -or $_.ProcessName -like 'BigAmbitions*'
 })
@@ -158,8 +167,20 @@ if ($running.Count -gt 0) {
 }
 
 Write-Step "Build $Configuration"
-$gameProp = $resolvedGame.TrimEnd('\') + '\'
-& dotnet build $project -c $Configuration "-p:GameDir=$gameProp"
+
+# Windows PowerShell 5 native-command quoting has a nasty edge case when an
+# argument containing spaces ends in a backslash. The old script passed
+#   -p:GameDir=E:\...\Big Ambitions\
+# and MSBuild could silently fall back to the csproj's default C: path, causing
+# every game/Unity reference to disappear and ~thousands of cascade errors.
+# Forward slashes avoid that quoting ambiguity. Pass ManagedDir explicitly too,
+# so the compiler does not depend on path concatenation inside the project file.
+$gameProp = (($resolvedGame -replace '\\', '/').TrimEnd('/')) + '/'
+$managedProp = (($managed -replace '\\', '/').TrimEnd('/')) + '/'
+Write-Host "MSBuild GameDir:    $gameProp"
+Write-Host "MSBuild ManagedDir: $managedProp"
+
+& dotnet build $project -c $Configuration "-p:GameDir=$gameProp" "-p:ManagedDir=$managedProp"
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE" }
 
 $deployDir = Join-Path $env:LOCALAPPDATA 'Low\Hovgaard Games\Big Ambitions\ModsLocal\BigAmbitionsMP'
@@ -188,8 +209,6 @@ if ($Package) {
     $zip = Join-Path $dist 'BigAmbitionsMP-Competitive.zip'
     if (Test-Path $zip) { Remove-Item $zip -Force }
 
-    # ZIP contains the BigAmbitionsMP folder itself so Player 2 can extract it
-    # directly under ModsLocal.
     $stage = Join-Path $env:TEMP ('bamp-competitive-' + [guid]::NewGuid().ToString('N'))
     $stageMod = Join-Path $stage 'BigAmbitionsMP'
     try {
